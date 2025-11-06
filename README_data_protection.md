@@ -26,6 +26,19 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 3. 스크립트가 영역 초기화 → 샘플 데이터 생성 → 시뮬레이터 확인/설치 → 악성코드 평가 → 랜섬웨어 평가 순으로 진행합니다.
 4. 종료 메시지에 출력되는 경로에서 CSV/JSON/XLSX/DOCX 파일을 확인합니다.
 
+### GitHub 저장소에서 전체 파일 내려받기
+`Download-GitHubRepository.ps1` 스크립트를 사용하면 특정 GitHub 저장소의 모든 파일을 ZIP으로 내려받아 자동으로 압축을 해제하고, 폴더 구조를 즉시 출력해 확인할 수 있습니다.
+
+```powershell
+# 예시: GitHub의 owner/project 저장소 main 브랜치를 C:\Temp\project 에 받기
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+./Download-GitHubRepository.ps1 -Repository "owner/project" -Branch main -Destination "C:\Temp\project" -Force
+```
+
+- `-Repository` 매개변수는 반드시 `소유자/저장소명` 형식이어야 합니다.
+- `-Force`를 지정하면 대상 폴더가 존재하더라도 삭제 후 다시 생성합니다.
+- 실행이 완료되면 콘솔에 `[DIR]`, `[FILE]` 형식으로 전체 구조가 출력되고, 마지막 줄에 실제 저장 위치가 표시됩니다.
+
 ## 평가 워크플로
 1. **영역 초기화 및 샘플 생성**
    - 두 영역의 기존 데이터를 삭제하고 문서(.doc, .docx, .ppt, .pptx, .xls, .xlsx, .hwp, .hwpx, .txt)와 시스템성 파일(hosts, system.env 등) 총 14개를 동일한 내용으로 생성합니다.
