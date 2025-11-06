@@ -1,6 +1,8 @@
 # data_protection_assessment.ps1 사용 가이드
 
-`data_protection_assessment.ps1`은 일반영역(Normal Area)과 보안영역(Secure Area)을 초기화하고, 동일한 테스트 데이터를 배치한 뒤 악성코드(Atomic Red Team) 및 랜섬웨어(RanSim) 시뮬레이션을 수행해 데이터 보호 능력을 자동으로 평가하는 PowerShell 스크립트입니다. 모든 단계는 관리자 권한 PowerShell 콘솔에서 순차적으로 진행되며, 결과는 CSV/JSON/XLSX/DOCX 보고서로 정리됩니다.
+`data_protection_assessment.ps1`은 일반영역(Normal Area)과 보안영역(Secure Area)을 초기화하고, 동일한 테스트 데이터를 배치한 뒤
+악성코드(Atomic Red Team) 및 랜섬웨어(RanSim) 시뮬레이션을 수행해 데이터 보호 능력을 자동으로 평가하는 PowerShell 스크립트입니다.
+모든 단계는 관리자 권한 PowerShell 콘솔에서 순차적으로 진행되며, 결과는 CSV/JSON/XLSX/DOCX 보고서로 정리됩니다.
 
 ## 핵심 기능
 1. **경로 입력 자동화** – 일반영역, 보안영역, 결과 저장 위치(.xlsx 파일 경로 또는 폴더)를 차례대로 입력받고 누락 시 재요청합니다.
@@ -25,6 +27,21 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 2. 결과 경로에 `.xlsx` 파일명을 지정하면 해당 이름으로 보고서가 생성되며, 폴더를 입력하면 스크립트가 `DataProtection_Report_yyyyMMdd_HHmmss.xlsx/.docx`를 작성합니다.
 3. 스크립트가 영역 초기화 → 샘플 데이터 생성 → 시뮬레이터 확인/설치 → 악성코드 평가 → 랜섬웨어 평가 순으로 진행합니다.
 4. 종료 메시지에 출력되는 경로에서 CSV/JSON/XLSX/DOCX 파일을 확인합니다.
+
+### GitHub 저장소에서 전체 파일을 Codex와 연동해 내려받기
+`Download-GitHubRepository.ps1`은 GitHub REST API를 통해 저장소 트리를 조회하고, 모든 파일을 개별적으로 다운로드한 뒤 Codex 연동용 매니페스트를 생성합니다. 매니페스트는 Codex 또는 기타 메타데이터 기반 파이프라인에서 재사용할 수 있습니다.
+
+```powershell
+# 예시: owner/project 저장소 main 브랜치를 C:\Temp\project 로 내려받고 Codex 매니페스트 생성
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+./Download-GitHubRepository.ps1 -Owner "owner" -Repository "project" -Branch main -Destination "C:\Temp\project" -Token $env:GITHUB_TOKEN -Force
+```
+
+- `-Owner`, `-Repository`는 필수 매개변수이며 GitHub 계정/저장소 이름을 각각 입력합니다.
+- `-Token`을 지정하면 GitHub 개인 액세스 토큰을 사용해 API 제한을 완화하고 비공개 저장소에 접근할 수 있습니다.
+- 스크립트는 다운로드한 파일 목록을 `codex_manifest.json`(또는 `-CodexManifestPath`로 지정한 위치)에 저장합니다. 파일 경로, SHA, 크기 정보가 포함되어 Codex 동기화에 활용할 수 있습니다.
+- `-Force`를 지정하면 대상 폴더가 이미 존재하더라도 삭제 후 다시 생성합니다.
+- 실행이 완료되면 콘솔에 `[DIR]`, `[FILE]` 형식으로 전체 구조가 출력되고, 마지막 줄에 실제 저장 위치가 표시됩니다.
 
 ## 평가 워크플로
 1. **영역 초기화 및 샘플 생성**
@@ -63,3 +80,4 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 - 생성된 보고서에는 경로·해시 값이 포함되므로 외부 반출 시 보안 정책을 준수하십시오.
 
 추가 문의나 개선 제안은 이 저장소의 이슈 트래커를 통해 전달해 주세요.
+
