@@ -63,3 +63,4 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 - 생성된 보고서에는 경로·해시 값이 포함되므로 외부 반출 시 보안 정책을 준수하십시오.
 
 추가 문의나 개선 제안은 이 저장소의 이슈 트래커를 통해 전달해 주세요.
+
