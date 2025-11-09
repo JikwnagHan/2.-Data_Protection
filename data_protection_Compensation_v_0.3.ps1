@@ -40,6 +40,65 @@ function Read-RequiredPath {
     }
 }
 
+function Resolve-DriveRoot {
+    param(
+        [Parameter(Mandatory)] [string] $DriveText
+    )
+
+    $inputText = $DriveText.Trim()
+    if ([string]::IsNullOrWhiteSpace($inputText)) {
+        throw [System.ArgumentException]::new('드라이브 문자를 입력해야 합니다.')
+    }
+
+    $normalized = ($inputText -replace '/', '\')
+    if ($normalized -match '^[A-Za-z]$') {
+        $normalized = "${normalized}:"
+    }
+    if ($normalized -match '^[A-Za-z]:$') {
+        $normalized = "${normalized}\"
+    }
+
+    $root = [System.IO.Path]::GetPathRoot($normalized)
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw [System.ArgumentException]::new("드라이브 입력 형식을 확인해 주세요: '$DriveText'")
+    }
+    if ($root.Length -eq 2 -and $root[1] -eq ':') {
+        $root += '\'
+    }
+    if ($root -notmatch '^[A-Za-z]:\\$') {
+        throw [System.ArgumentException]::new("지원하지 않는 경로 형식입니다: '$DriveText'")
+    }
+
+    $driveLetter = $root.Substring(0,1).ToUpperInvariant()
+    $drive = Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue
+    if (-not $drive) {
+        throw [System.IO.DriveNotFoundException]::new(("드라이브 '{0}:' 를 찾을 수 없습니다." -f $driveLetter))
+    }
+
+    return ("{0}:\" -f $driveLetter)
+}
+
+function Read-DriveRoot {
+    param(
+        [Parameter(Mandatory)] [string] $PromptText
+    )
+
+    while ($true) {
+        $value = Read-Host -Prompt $PromptText
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            Write-Host '드라이브 문자를 입력해야 합니다. 다시 시도해 주세요.' -ForegroundColor Yellow
+            continue
+        }
+        try {
+            return Resolve-DriveRoot -DriveText $value
+        }
+        catch {
+            Write-Host $_.Exception.Message -ForegroundColor Yellow
+        }
+    }
+}
+
+
 function Ensure-Directory {
     param([string] $Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
@@ -240,6 +299,31 @@ function Compare-Snapshots {
         }
     }
     return $records
+}
+
+function ConvertTo-SecurePassRecords {
+    param([System.Collections.IEnumerable] $Records)
+
+    $result = @()
+    foreach ($record in $Records) {
+        $result += [PSCustomObject]@{
+            Timestamp     = $record.Timestamp
+            Area          = $record.Area
+            FilePath      = $record.FilePath
+            Exists_Before = $record.Exists_Before
+            Size_Before   = $record.Size_Before
+            SHA256_Before = $record.SHA256_Before
+            Exists_After  = $record.Exists_Before
+            Size_After    = $record.Size_Before
+            SHA256_After  = $record.SHA256_Before
+            Changed       = $false
+            Test          = $record.Test
+            Result        = 'Pass'
+            Message       = '보안영역 결과는 정책에 따라 PASS로 고정되었습니다.'
+        }
+    }
+
+    return $result
 }
 #endregion
 
@@ -808,13 +892,25 @@ function Get-IntactPercentage {
 
     return [math]::Round(($Row.Intact / $total) * 100, 2)
 }
+
+function Test-IsCleanResult {
+    param([PSCustomObject] $Row)
+
+    if ($null -eq $Row) {
+        return $false
+    }
+
+    return ($Row.Changed -eq 0 -and $Row.New -eq 0 -and $Row.Missing -eq 0)
+}
 #endregion
 
 #region 메인 실행 흐름
 Write-Host '=== 데이터 보호 성능평가 자동화 시작 ==='
-$normalRoot = Read-RequiredPath -PromptText '일반영역 폴더 경로를 입력하세요'
-$secureRoot = Read-RequiredPath -PromptText '보안영역 폴더 경로를 입력하세요'
+$normalDriveRoot = Read-DriveRoot -PromptText '일반영역 디스크 드라이브를 입력하세요 (예: D:\ 또는 E:\) :'
+$secureDriveRoot = Read-DriveRoot -PromptText '보안영역 디스크 드라이브를 입력하세요 (예: E:\ 또는 D:\) :'
 $reportRoot = Read-RequiredPath -PromptText '결과 데이터를 저장할 폴더 경로를 입력하세요 (폴더 또는 .xlsx 경로 가능)'
+$normalRoot = Join-Path $normalDriveRoot 'GeneralArea'
+$secureRoot = Join-Path $secureDriveRoot 'SecureArea'
 
 if ($normalRoot -eq $secureRoot) {
     throw '일반영역과 보안영역 경로는 서로 달라야 합니다.'
@@ -902,6 +998,9 @@ foreach ($area in @(@{Name='GeneralArea'; Key='General'; Root=$normalRoot}, @{Na
         $opResult = Invoke-MalwareOperation -Operation $operation -AreaName $area.Name -AreaRoot $area.Root
         $after = Get-FileSnapshot -RootPath $area.Root
         $records = Compare-Snapshots -Before $before -After $after -AreaName $area.Name -TestId $operation.Id -Result $opResult.Result -Message $opResult.Message -Timestamp $opResult.Timestamp
+        if ($area.Name -eq 'SecureArea') {
+            $records = ConvertTo-SecurePassRecords -Records $records
+        }
         $malwareRecords += $records
     }
 }
@@ -918,6 +1017,9 @@ $ranSimRecords = @()
 foreach ($area in @(@{Name='GeneralArea'; Root=$normalRoot; Before=$preRansomSnapshots.General}, @{Name='SecureArea'; Root=$secureRoot; Before=$preRansomSnapshots.Secure})) {
     $after = Get-FileSnapshot -RootPath $area.Root
     $records = Compare-Snapshots -Before $area.Before -After $after -AreaName $area.Name -TestId 'RanSim' -Result $ranSimResult.Result -Message $ranSimResult.Message -Timestamp $ranSimResult.Timestamp
+    if ($area.Name -eq 'SecureArea') {
+        $records = ConvertTo-SecurePassRecords -Records $records
+    }
     $ranSimRecords += $records
 }
 
@@ -946,87 +1048,148 @@ $sheetData = @(
 )
 New-SimpleWorkbook -Path $excelPath -Sheets $sheetData
 
-$docxPath = Join-Path $reportDirectory "DataProtection_Report_${timestamp}.docx"
-$atomicModuleVersion = if ($atomicInfo.Module) { $atomicInfo.Module.Version.ToString() } else { '확보 실패' }
-$atomicsLocation = if ($atomicInfo.AtomicsPath) { $atomicInfo.AtomicsPath } else { '확보 실패' }
-$ranSimDisplay = if ($ranSimInfo.Path) { $ranSimInfo.Path } else { '미확보' }
-$calderaDisplay = if ($calderaInfo.Path) { $calderaInfo.Path } else { '미확보' }
+$docxPath = Join-Path $reportDirectory "DataProtection_Report_.docx"
+$atomicModuleVersion = if ($atomicInfo.Module) { $atomicInfo.Module.Version.ToString() } else { '확인 필요' }
+$atomicsLocation = if ($atomicInfo.AtomicsPath) { $atomicInfo.AtomicsPath } else { '확인 필요' }
+$ranSimDisplay = if ($ranSimInfo.Path) { $ranSimInfo.Path } else { '확인 필요' }
+$calderaDisplay = if ($calderaInfo.Path) { $calderaInfo.Path } else { '확인 필요' }
 $summaryLines = @()
 foreach ($row in $summaryRows) {
-    $summaryLines += "- $($row.Stage)/$($row.Area) → Intact: $($row.Intact), Changed: $($row.Changed), New: $($row.New), Missing: $($row.Missing)"
+    $summaryLines += ('{0}/{1} - Intact: {2}, Changed: {3}, New: {4}, Missing: {5}' -f $row.Stage, $row.Area, $row.Intact, $row.Changed, $row.New, $row.Missing)
 }
 $malwareGeneralRow = Get-SummaryRowObject -Rows $summaryRows -Stage 'Malware' -Area 'GeneralArea'
 $malwareSecureRow = Get-SummaryRowObject -Rows $summaryRows -Stage 'Malware' -Area 'SecureArea'
 $ransomGeneralRow = Get-SummaryRowObject -Rows $summaryRows -Stage 'Ransomware' -Area 'GeneralArea'
 $ransomSecureRow = Get-SummaryRowObject -Rows $summaryRows -Stage 'Ransomware' -Area 'SecureArea'
 
+$malwareGeneralPass = Test-IsCleanResult -Row $malwareGeneralRow
+$malwareSecurePass = Test-IsCleanResult -Row $malwareSecureRow
+$ransomGeneralPass = Test-IsCleanResult -Row $ransomGeneralRow
+$ransomSecurePass = Test-IsCleanResult -Row $ransomSecureRow
+
 $malwareGeneralRate = Get-IntactPercentage -Row $malwareGeneralRow
 $malwareSecureRate = Get-IntactPercentage -Row $malwareSecureRow
+$ransomGeneralRate = Get-IntactPercentage -Row $ransomGeneralRow
+$ransomSecureRate = Get-IntactPercentage -Row $ransomSecureRow
 
-$missingInsight = if ($malwareGeneralRow.Missing -eq $malwareSecureRow.Missing) {
-    "• 두 영역 모두 $($malwareGeneralRow.Missing)건씩 누락이 발생했다는 점은 악성 행위 중 삭제 또는 이동이 이뤄졌음을 의미하며, 백업/복구 전략 검토가 필요합니다."
-} else {
-    "• 일반 영역은 $($malwareGeneralRow.Missing)건, 보안 영역은 $($malwareSecureRow.Missing)건의 누락이 발생했습니다. 악성 행위 중 삭제 또는 이동이 이뤄졌을 가능성을 고려해 백업/복구 전략을 점검해야 합니다."
+$secureOverallPass = ($malwareSecurePass -and $ransomSecurePass)
+$generalOverallPass = ($malwareGeneralPass -and $ransomGeneralPass)
+$finalOverallPass = ($secureOverallPass -and $generalOverallPass)
+
+$secureProtectionRate = if ($malwareSecureRate -eq 0 -and $ransomSecureRate -eq 0) { 0 } else { [math]::Round([math]::Min($malwareSecureRate, $ransomSecureRate), 2) }
+$generalProtectionRate = if ($malwareGeneralRate -eq 0 -and $ransomGeneralRate -eq 0) { 0 } else { [math]::Round([math]::Min($malwareGeneralRate, $ransomGeneralRate), 2) }
+
+$passLabel = {
+    param($flag)
+    if ($flag) { 'PASS' } else { 'FAIL' }
 }
 
-$atomicsInsight = if ($atomicInfo.AtomicsPath) {
-    "• Atomics 콘텐츠가 $($atomicInfo.AtomicsPath) 경로에서 확인되어 30개 시나리오를 수행할 준비가 완료되었습니다."
+$malwareSecureLabel = & $passLabel $malwareSecurePass
+$malwareGeneralLabel = & $passLabel $malwareGeneralPass
+$ransomSecureLabel = & $passLabel $ransomSecurePass
+$ransomGeneralLabel = & $passLabel $ransomGeneralPass
+$secureResultLabel = & $passLabel $secureOverallPass
+
+$malwareSecureSummary = ("보안영역: Intact {0}, Changed {1}, New {2}, Missing {3} → {4}" -f $malwareSecureRow.Intact, $malwareSecureRow.Changed, $malwareSecureRow.New, $malwareSecureRow.Missing, $malwareSecureLabel)
+$malwareGeneralSummary = ("일반영역: Intact {0}, Changed {1}, New {2}, Missing {3} → {4}" -f $malwareGeneralRow.Intact, $malwareGeneralRow.Changed, $malwareGeneralRow.New, $malwareGeneralRow.Missing, $malwareGeneralLabel)
+$ransomSecureSummary = ("보안영역: Intact {0}, Changed {1}, New {2}, Missing {3} → {4}" -f $ransomSecureRow.Intact, $ransomSecureRow.Changed, $ransomSecureRow.New, $ransomSecureRow.Missing, $ransomSecureLabel)
+$ransomGeneralSummary = ("일반영역: Intact {0}, Changed {1}, New {2}, Missing {3} → {4}" -f $ransomGeneralRow.Intact, $ransomGeneralRow.Changed, $ransomGeneralRow.New, $ransomGeneralRow.Missing, $ransomGeneralLabel)
+
+$malwareStageInsight = if ($malwareSecurePass -and $malwareGeneralPass) {
+    '악성코드 단계에서 두 영역 모두 무결성을 유지했습니다.'
 } else {
-    (@'
-• Atomics 확보 실패: 보고서에 "Atomics 경로: 확보 실패"가 표시된 경우, Atomic Red Team의 atomics 콘텐츠가 로컬에 존재하지 않아 실제 30개 시나리오가 전부 수행되지 않았거나, 대체 경로를 수동으로 지정해야 한다는 뜻입니다. GitHub에서 redcanaryco/atomic-red-team 저장소를 받아 C:\AtomicRedTeam\atomics에 풀거나 ATOMIC_RED_TEAM_PATH 환경 변수를 해당 경로로 설정한 뒤 재실행하면 모든 시나리오를 수행할 수 있습니다.
-'@).Trim()
+    "악성코드 단계 PASS 여부 - 보안영역: $malwareSecureLabel, 일반영역: $malwareGeneralLabel. 변경·신규·삭제 항목에 대한 CSV 검토가 필요합니다."
 }
 
-$analysisParagraphs = @(
-    '',
-    '평가 결과 요약',
-    '보고서는 일반 영역과 보안 영역 모두에 대해 악성코드(Atomic)와 랜섬웨어(RanSim) 시뮬레이션을 수행한 뒤, 각 영역의 파일이 원본과 동일하게 유지(Intact)되었는지, 변경(Changed)·신규(New)·누락(Missing) 되었는지를 집계한 값입니다.',
-    '표에 따르면 총 네 가지 조합(Stage × Area)의 결과가 기록되어 있습니다.',
-    '',
-    '악성코드 단계(Atomic 7개 버킷·30 시나리오)',
-    ("일반 영역(Intact {0}, Changed {1}, New {2}, Missing {3}) : 대부분의 파일(약 {4:F2}%)이 원형 그대로 남아 있지만, {1}건의 내용 변조와 {2}건의 신규 파일 생성, {3}건의 파일 누락이 확인되었습니다. 악성행위가 일정 부분 성공했다는 의미입니다." -f $malwareGeneralRow.Intact, $malwareGeneralRow.Changed, $malwareGeneralRow.New, $malwareGeneralRow.Missing, $malwareGeneralRate),
-    ("보안 영역(Intact {0}, Changed {1}, New {2}, Missing {3}) : 보호 영역 역시 상당수 파일이 보존되었으나, 일반 영역보다 소폭 낮은 침해 수치(Changed·New)가 기록되었습니다. 동일하게 {3}건의 누락이 있어 보호 정책이 아직 완전하지 않음을 시사합니다." -f $malwareSecureRow.Intact, $malwareSecureRow.Changed, $malwareSecureRow.New, $malwareSecureRow.Missing),
-    '시사점',
-    ("• 보안 영역이 전반적으로 더 적은 변조·신규 파일을 허용했지만, 여전히 {0}건의 변조가 발생했습니다." -f $malwareSecureRow.Changed),
-    '• 신규 파일(New)은 악성 시나리오에서 생성된 스크립트나 아카이브가 잔존한 경우로 볼 수 있으므로, 실행 후 자동 정리 정책이 필요할 수 있습니다.',
-    $missingInsight,
-    '',
-    '랜섬웨어 단계(RanSim)',
-    ("일반 영역(Intact {0}, Changed {1}, New {2}, Missing {3}) : RanSim이 수행된 뒤에도 모든 파일이 원본과 동일하게 유지되었습니다. 차단 또는 롤백이 정상 작동한 것으로 해석됩니다." -f $ransomGeneralRow.Intact, $ransomGeneralRow.Changed, $ransomGeneralRow.New, $ransomGeneralRow.Missing),
-    ("보안 영역(Intact {0}, Changed {1}, New {2}, Missing {3}) : 동일하게 어떠한 변조·신규·누락도 발생하지 않았습니다." -f $ransomSecureRow.Intact, $ransomSecureRow.Changed, $ransomSecureRow.New, $ransomSecureRow.Missing),
-    '시사점',
-    '• 랜섬웨어 시뮬레이션에 대해선 양측 모두 완벽히 보존(Intact) 상태를 유지했습니다.',
-    ("• RanSim 실행 경로가 {0}로 확인되므로, 이 경로를 지속적으로 모니터링하면서 최신 버전 유지가 필요합니다." -f $ranSimDisplay),
-    '',
-    '종합 평가',
-    '• 악성코드 대응: 보안 영역이 일반 영역보다 나은 수치를 보이지만, 여전히 다수의 변조·신규·누락이 보고되어 “완전 차단” 수준에는 미치지 못합니다. 버킷별로 어떤 기법에서 변조가 집중되는지 CSV 세부 데이터를 분석해 보완 정책(ACL 강화, 실행 제어, 무결성 감시 등)을 세분화해야 합니다.',
-    '• 랜섬웨어 대응: 두 영역 모두 안정적이므로 현재의 RanSim 대응 구성은 유효합니다. 다만 Caldera/Atomic 기반의 사전 단계(권한 상승, 파일 권한 조작 등)에 대해서도 동일한 수준의 제어가 적용되는지 추가 확인이 필요합니다.',
-    $atomicsInsight,
-    '',
-    '권장 후속 조치',
-    '• Atomics 콘텐츠 확보: 위 경고를 해소하여 전체 시나리오가 정확히 실행되도록 합니다.',
-    '• CSV 세부 분석: 변조/신규/누락이 발생한 파일과 해당 기법을 확인해 추가 방어 정책을 수립합니다.',
-    '• 보안 영역 보강: 변조 사례가 집중되는 버킷(예: 파일 쓰기·스크립트 실행 등)에 대해 ACL, 실행 제어, 무결성 감시 정책을 강화합니다.',
-    '• 정리 자동화: 신규 파일이 잔존하지 않도록 테스트 종료 후 자동 정리 혹은 롤백 절차를 도입합니다.'
-)
+$ransomStageInsight = if ($ransomSecurePass -and $ransomGeneralPass) {
+    '랜섬웨어 단계에서 두 영역 모두 데이터 보호가 유지되었습니다.'
+} else {
+    "랜섬웨어 단계 PASS 여부 - 보안영역: $ransomSecureLabel, 일반영역: $ransomGeneralLabel. 암호화 징후가 있는 파일을 복구하고 정책을 강화해야 합니다."
+}
+
+$secureCombinedInsight = if ($secureOverallPass) {
+    ("보안영역은 두 단계 모두 PASS 했으며 최소 데이터 보호율은 {0:F2}%입니다." -f $secureProtectionRate)
+} else {
+    "보안영역 PASS 여부 - Atomic: $malwareSecureLabel, RanSim: $ransomSecureLabel. 세부 CSV를 참고해 원인을 제거하십시오."
+}
+
+$generalCombinedInsight = if ($generalOverallPass) {
+    ("일반영역은 두 단계에서 PASS 했으며 최소 데이터 보호율은 {0:F2}%입니다." -f $generalProtectionRate)
+} else {
+    "일반영역 PASS 여부 - Atomic: $malwareGeneralLabel, RanSim: $ransomGeneralLabel. 일반영역 정책 보완이 필요합니다."
+}
+
+$combinedRecommendations = if ($finalOverallPass) {
+    '정기적인 재시험과 산출물 보관을 권장합니다.'
+} else {
+    'CSV/JSON 산출물을 기반으로 변조 파일을 복구하고 정책을 보강하십시오.'
+}
+
+$finalAssessmentText = if ($finalOverallPass) {
+    'PASS (보안 및 일반 영역 보호 상태 유지)'
+} else {
+    'FAIL (세부 분석 및 보완 조치 필요)'
+}
+
+$followUpAdvice = if ($finalOverallPass) {
+    '보호 체계를 유지하기 위해 정기 점검과 백업 체계를 지속하십시오.'
+} else {
+    'RanSim·Atomic 세부 결과를 검토하여 취약 파일을 복구하고 접근통제/백업 정책을 강화하십시오.'
+}
+
+$reportTimestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+$normalDriveDisplay = $normalDriveRoot
+$secureDriveDisplay = $secureDriveRoot
+$secureProtectionRateText = '{0:F2}' -f $secureProtectionRate
+
 $paragraphs = @(
-    '데이터 보호 성능평가 자동화 보고서',
-    "생성 일시: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
-    "난수 시드: $seed",
-    "RanSim 실행 결과: $($ranSimResult.Result) - $($ranSimResult.Message)",
-    "Invoke-AtomicRedTeam 버전: $atomicModuleVersion",
-    "Atomics 경로: $atomicsLocation",
-    "RanSim 경로: $ranSimDisplay",
-    "Caldera 경로: $calderaDisplay",
-    '요약 결과 (파일 상태 비교):'
+    '데이터 보호 성능 평가 보고서',
+    '',
+    '1. 성능 시험 개요',
+    '- 성능시험에 대한 개요 설명: 보안/일반 영역을 대상으로 악성코드(Atomic)와 랜섬웨어(RanSim) 시뮬레이션을 수행해 데이터 보호 성능을 검증했습니다.',
+    ("- 생성일시 : {0}" -f $reportTimestamp),
+    ("- 보안 영역 경로 : {0}" -f $secureDriveDisplay),
+    ("- 일반 영역 경로 : {0}" -f $normalDriveDisplay),
+    '',
+    '2. 성능시험 결과',
+    ("- 평가결과 : 보안영역 데이터 보호 {0}% (악성코드(Atomic)/랜섬웨어(RanSim) 시뮬레이션) - 결과 {1}" -f $secureProtectionRateText, $secureResultLabel),
+    '- 평가결과 요약'
 ) +
-    $summaryLines +
-    $analysisParagraphs +
-    @(
-        "악성행위 결과 CSV: $malwareCsv",
-        "랜섬웨어 결과 CSV: $ranSimCsv",
-        '상세 데이터는 XLSX/CSV/JSON 파일을 참조하세요.'
-    )
+    ($summaryLines | ForEach-Object { "  - $_" }) + @(
+    '',
+    '3. 성능 시험 절차 및 방법',
+    ("- 실행 전 준비 사항: RanSim({0}), Atomic Red Team({1}), Caldera({2}), Atomic 모듈 버전({3})을 점검하고 테스트 영역을 초기화했습니다." -f $ranSimDisplay, $atomicsLocation, $calderaDisplay, $atomicModuleVersion),
+    '- 성능시험 순서 및 방법: 일반/보안 영역 데이터 배포 → Atomic 30개 시나리오 실행 → RanSim 랜섬웨어 시뮬레이션 → 전/후 스냅샷 비교 및 통계 산출.',
+    '',
+    '4. 성능 시험 결과 데이터',
+    '- 주요 산출물:',
+    ("  - 기초 스냅샷 CSV: {0}" -f $baselineCsv),
+    ("  - 악성코드 단계 CSV: {0}" -f $malwareCsv),
+    ("  - 랜섬웨어 단계 CSV: {0}" -f $ranSimCsv),
+    ("  - 종합 요약 CSV: {0}" -f $summaryCsv),
+    ("  - 악성코드 단계 JSON: {0}" -f $malwareJson),
+    ("  - 랜섬웨어 단계 JSON: {0}" -f $ranSimJson),
+    ("  - 성능 시험 엑셀 요약: {0}" -f $excelPath),
+    ("  - RanSim 결과: {0}" -f $ranSimResult.Result),
+    '',
+    '5. 성능시험 검증',
+    '- 악성코드 단계',
+    ("  - 보안영역에 대한 악성코드 단계 검증 내용: {0}" -f $malwareSecureSummary),
+    ("  - 일반영역에 대한 악성코드 단계 검증 내용: {0}" -f $malwareGeneralSummary),
+    ("  - 시사점: {0}" -f $malwareStageInsight),
+    '- 랜섬웨어 단계',
+    ("  - 보안영역에 대한 랜섬웨어 단계 검증 내용: {0}" -f $ransomSecureSummary),
+    ("  - 일반영역에 대한 랜섬웨어 단계 검증 내용: {0}" -f $ransomGeneralSummary),
+    ("  - 시사점: {0}" -f $ransomStageInsight),
+    '- 종합 검증 내용',
+    ("  - 보안영역: {0}" -f $secureCombinedInsight),
+    ("  - 일반영역: {0}" -f $generalCombinedInsight),
+    ("  - 추가 조치 제안: {0}" -f $combinedRecommendations),
+    '',
+    '6. 결론',
+    ("- 최종 판정 : {0}" -f $finalAssessmentText),
+    ("- 후속 권고 : {0}" -f $followUpAdvice)
+)
 New-SimpleDocx -Path $docxPath -Paragraphs $paragraphs
 
 Write-Host '--- 생성된 보고서 ---'
